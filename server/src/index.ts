@@ -1,9 +1,12 @@
 import "dotenv/config";
-import { createApp, type AppServices } from "./app.js";
 import { createDefaultAgentService, hasAgentRuntimeConfig } from "./agent/runtime.js";
+import { createApp, type AppServices } from "./app.js";
+import { prisma } from "./lib/prisma.js";
+import { healthRouter } from "./routes/health.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const services: AppServices = {};
+
 if (hasAgentRuntimeConfig()) {
   services.agentService = createDefaultAgentService();
   const interval = setInterval(() => {
@@ -11,8 +14,30 @@ if (hasAgentRuntimeConfig()) {
   }, Number(process.env.AGENT_WORKER_INTERVAL_MS ?? 2_000));
   interval.unref();
 }
-const app = createApp(services);
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+const app = createApp(services);
+app.use("/api/health", healthRouter);
+
+async function startServer(): Promise<void> {
+  await prisma.$connect();
+
+  const server = app.listen(PORT, () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+
+  const shutdown = (signal: NodeJS.Signals): void => {
+    console.log(`${signal} received. Shutting down...`);
+    server.close(async () => {
+      await prisma.$disconnect();
+      process.exit(0);
+    });
+  };
+
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+startServer().catch((error: unknown) => {
+  console.error("Failed to connect to the database:", error);
+  process.exitCode = 1;
 });
