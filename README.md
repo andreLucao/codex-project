@@ -9,7 +9,7 @@ assíncrona de fornecedores no Google Maps através do Actor da Apify
 1. O dono descreve item, quantidade e prazo em linguagem natural.
 2. O agente usa o cadastro do restaurante no Supabase para obter a localização.
 3. A busca Apify encontra até 10 fornecedores com telefone.
-4. O primeiro contato é delegado ao MCP de WhatsApp usando um template aprovado.
+4. O primeiro contato é enviado pela integração direta com a WhatsApp Cloud API usando um template aprovado.
 5. A primeira resposta do fornecedor abre a janela de atendimento e o agente passa a cuidar da thread.
 6. Texto, áudio e imagem são convertidos em uma cotação estruturada e normalizada.
 7. Ao receber cinco cotações comparáveis, o menor preço é congelado como âncora e enviado aos demais fornecedores.
@@ -39,23 +39,16 @@ ele. Inicie o servidor com `npm run dev` dentro de `server/`.
 
 Antes de iniciar o agente, aplique `server/supabase/migrations/001_procurement_agent.sql` no projeto Supabase. A tabela de cadastro de restaurantes deve fornecer `id`, `name` e `location`; o nome pode ser configurado com `RESTAURANTS_TABLE`.
 
-## Integração de WhatsApp e MCP
+## Integração das branches
 
-O runtime aceita dois modos de WhatsApp:
+O runtime do agente concilia diretamente as duas integrações:
 
-- Cloud API direta, configurada pelas variáveis `META_*`; ou
-- servidor MCP Streamable HTTP configurado em `WHATSAPP_MCP_URL`.
+- a busca de fornecedores da branch Apify, configurada por `APIFY_TOKEN`;
+- a implementação de WhatsApp Cloud API, configurada pelas variáveis `META_*`.
 
-Quando MCP estiver habilitado, o serviço de WhatsApp deve expor:
+O agente estrutura a RFQ, chama a busca Apify, envia o primeiro template pela implementação de WhatsApp e passa a processar as respostas recebidas pelo webhook. Durante a janela de 24 horas, contraofertas e esclarecimentos usam mensagens de sessão; fora dela, a integração envia o template de reengajamento aprovado.
 
-- `send_initial_rfq_template`: primeiro contato com template aprovado;
-- `send_whatsapp_session_message`: texto livre durante a janela aberta;
-- `request_reengagement_template`: reabre uma thread cuja janela expirou;
-- `get_whatsapp_media`: devolve URL temporária e MIME type de áudio ou imagem.
-
-Opcionalmente, `SUPPLIER_MCP_URL` pode expor `search_suppliers`. Sem essa variável, o agente reutiliza diretamente o `SupplierSearchService`/Apify já existente.
-
-As mensagens recebidas entram em `GET/POST /api/whatsapp/webhook`, com validação do token e da assinatura `X-Hub-Signature-256`. O agente correlaciona a resposta pelo ID da mensagem original e usa o telefone como fallback. MCP continua sendo usado para ações solicitadas pelo agente, não como transporte de webhooks.
+As mensagens recebidas entram em `GET/POST /api/whatsapp/webhook`, com validação do token e da assinatura `X-Hub-Signature-256`. O agente correlaciona a resposta pelo ID da mensagem original e usa o telefone como fallback.
 
 Para testar um envio direto sem passar pelo agente, use `POST /api/whatsapp/messages` com `{ "to": "5511999999999", "message": "Olá" }` ou um payload oficial da Meta.
 

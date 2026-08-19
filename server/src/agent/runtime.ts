@@ -1,23 +1,19 @@
 import { ApifySupplierSearchClient, SupplierSearchService } from "../supplier-search.js";
-import { LocalSupplierGateway, McpSupplierGateway, McpToolClient, McpWhatsappGateway, MetaWhatsappGateway } from "./gateways.js";
+import { LocalSupplierGateway, MetaWhatsappGateway } from "./gateways.js";
 import { OpenAIQuoteInterpreter, OpenAIRfqIntake } from "./openai-agents.js";
 import { SupabaseAgentRepository } from "./repository.js";
 import { ProcurementAgentService } from "./service.js";
 
 export function createDefaultAgentService(): ProcurementAgentService {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required for agent routes.");
-  if (!hasWhatsappConfig()) throw new Error("WHATSAPP_MCP_URL or Meta WhatsApp credentials are required for agent routes.");
+  if (!process.env.APIFY_TOKEN) throw new Error("APIFY_TOKEN is required for supplier discovery.");
+  if (!hasMetaWhatsappConfig()) throw new Error("Meta WhatsApp credentials are required for agent routes.");
 
-  const whatsappGateway = process.env.WHATSAPP_MCP_URL
-    ? new McpWhatsappGateway(new McpToolClient(
-        process.env.WHATSAPP_MCP_URL,
-        "whatsapp",
-        process.env.WHATSAPP_MCP_TOKEN ? { Authorization: `Bearer ${process.env.WHATSAPP_MCP_TOKEN}` } : undefined,
-      ))
-    : new MetaWhatsappGateway();
-  const supplierGateway = process.env.SUPPLIER_MCP_URL
-    ? new McpSupplierGateway(new McpToolClient(process.env.SUPPLIER_MCP_URL, "suppliers"))
-    : new LocalSupplierGateway(new SupplierSearchService(new ApifySupplierSearchClient()));
+  // Composition point for the merged branches: supplier discovery stays on the
+  // Apify implementation and every outbound/media action uses the direct Meta
+  // WhatsApp integration. The agent only orchestrates those two boundaries.
+  const whatsappGateway = new MetaWhatsappGateway();
+  const supplierGateway = new LocalSupplierGateway(new SupplierSearchService(new ApifySupplierSearchClient()));
 
   return new ProcurementAgentService({
     repository: SupabaseAgentRepository.fromEnv(),
@@ -38,16 +34,20 @@ export function createDefaultAgentService(): ProcurementAgentService {
 export function hasAgentRuntimeConfig(): boolean {
   return Boolean(
     process.env.OPENAI_API_KEY &&
+    process.env.APIFY_TOKEN &&
     process.env.SUPABASE_URL &&
     process.env.SUPABASE_SERVICE_ROLE_KEY &&
-    hasWhatsappConfig(),
+    hasMetaWhatsappConfig(),
   );
 }
 
-function hasWhatsappConfig(): boolean {
+function hasMetaWhatsappConfig(): boolean {
   return Boolean(
-    process.env.WHATSAPP_MCP_URL ||
-    (process.env.META_WHATSAPP_ACCESS_TOKEN && process.env.META_WHATSAPP_PHONE_NUMBER_ID && process.env.META_GRAPH_API_VERSION),
+    process.env.META_WHATSAPP_ACCESS_TOKEN &&
+    process.env.META_WHATSAPP_PHONE_NUMBER_ID &&
+    process.env.META_GRAPH_API_VERSION &&
+    process.env.META_INITIAL_RFQ_TEMPLATE_NAME &&
+    process.env.META_REENGAGEMENT_TEMPLATE_NAME,
   );
 }
 
