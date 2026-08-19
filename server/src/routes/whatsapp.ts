@@ -1,9 +1,47 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
+import { Prisma } from "../generated/prisma/client.js";
+import { prisma } from "../lib/prisma.js";
 
 export type RequestWithRawBody = Request & { rawBody?: Buffer };
 
 type JsonObject = Record<string, unknown>;
+
+type WebhookMessage = JsonObject & {
+  from: string;
+  id: string;
+  timestamp: string;
+  type: string;
+};
+
+export type ConversationHistoryMessage =
+  | {
+      id: string;
+      direction: "sent";
+      whatsappMessageId: string | null;
+      type: string;
+      payload: Prisma.JsonValue;
+      status: "PENDING" | "SENT" | "FAILED";
+      timestamp: Date;
+    }
+  | {
+      id: string;
+      direction: "received";
+      sentMessageId: string;
+      whatsappMessageId: string;
+      type: string;
+      payload: Prisma.JsonValue;
+      timestamp: Date;
+    };
+
+export type ConversationHistory = {
+  contact: {
+    id: string;
+    phoneNumber: string;
+    name: string | null;
+  };
+  messages: ConversationHistoryMessage[];
+};
 
 class WhatsAppValidationError extends Error {
   constructor(message: string) {
@@ -39,6 +77,10 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function toJsonValue(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
 function normalizePhoneNumber(phoneNumber: string): string {
   const trimmedPhoneNumber = phoneNumber.trim();
 
@@ -59,7 +101,31 @@ function normalizePhoneNumber(phoneNumber: string): string {
   return digits;
 }
 
-async function sendWhatsAppPayload(messagePayload: JsonObject): Promise<unknown> {
+function getWhatsAppMessageId(responseBody: unknown): string | undefined {
+  if (!isJsonObject(responseBody) || !Array.isArray(responseBody.messages)) {
+    return undefined;
+  }
+
+  const firstMessage = responseBody.messages[0];
+  return isJsonObject(firstMessage) && typeof firstMessage.id === "string"
+    ? firstMessage.id
+    : undefined;
+}
+
+async function markSentMessageAsFailed(sentMessageId: string): Promise<void> {
+  try {
+    await prisma.sentMessage.update({
+      where: { id: sentMessageId },
+      data: { status: "FAILED" },
+    });
+  } catch (error) {
+    console.error("Nao foi possivel marcar a mensagem como falha:", error);
+  }
+}
+
+async function sendWhatsAppPayload(
+  messagePayload: JsonObject & { to: string },
+): Promise<unknown> {
   const accessToken = requiredEnv("META_WHATSAPP_ACCESS_TOKEN");
   const phoneNumberId = requiredEnv("META_WHATSAPP_PHONE_NUMBER_ID");
   const graphApiVersion = requiredEnv("META_GRAPH_API_VERSION");
@@ -67,31 +133,64 @@ async function sendWhatsAppPayload(messagePayload: JsonObject): Promise<unknown>
     process.env.META_GRAPH_API_BASE_URL ?? "https://graph.facebook.com"
   ).replace(/\/$/, "");
 
-  const metaResponse = await fetch(
-    `${graphApiBaseUrl}/${graphApiVersion}/${encodeURIComponent(phoneNumberId)}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        ...messagePayload,
-      }),
+  const to = normalizePhoneNumber(messagePayload.to);
+  const payload: JsonObject & { to: string } = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    ...messagePayload,
+    to,
+  };
+  const contact = await prisma.contact.upsert({
+    where: { phoneNumber: to },
+    update: {},
+    create: { phoneNumber: to },
+  });
+  const sentMessage = await prisma.sentMessage.create({
+    data: {
+      contactId: contact.id,
+      type: typeof payload.type === "string" ? payload.type : "unknown",
+      payload: toJsonValue(payload),
     },
-  );
+  });
+
+  let metaResponse: globalThis.Response;
+
+  try {
+    metaResponse = await fetch(
+      `${graphApiBaseUrl}/${graphApiVersion}/${encodeURIComponent(phoneNumberId)}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+  } catch (error) {
+    await markSentMessageAsFailed(sentMessage.id);
+    throw error;
+  }
 
   const responseBody: unknown = await metaResponse.json().catch(() => null);
 
   if (!metaResponse.ok) {
+    await markSentMessageAsFailed(sentMessage.id);
     throw new WhatsAppApiError(
       "A Meta recusou o envio da mensagem.",
       metaResponse.status,
       responseBody,
     );
   }
+
+  await prisma.sentMessage.update({
+    where: { id: sentMessage.id },
+    data: {
+      status: "SENT",
+      sentAt: new Date(),
+      whatsappMessageId: getWhatsAppMessageId(responseBody),
+    },
+  });
 
   return responseBody;
 }
@@ -147,6 +246,80 @@ export async function sendMessage(
   });
 }
 
+/** Busca todas as mensagens de um contato em ordem cronologica. */
+export async function getConversationHistory(
+  phoneNumber: string,
+): Promise<ConversationHistory | null> {
+  const normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+  const contact = await prisma.contact.findUnique({
+    where: { phoneNumber: normalizedPhoneNumber },
+    select: {
+      id: true,
+      phoneNumber: true,
+      name: true,
+      sentMessages: {
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          whatsappMessageId: true,
+          type: true,
+          payload: true,
+          status: true,
+          sentAt: true,
+          createdAt: true,
+        },
+      },
+      receivedMessages: {
+        orderBy: { receivedAt: "asc" },
+        select: {
+          id: true,
+          sentMessageId: true,
+          whatsappMessageId: true,
+          type: true,
+          payload: true,
+          receivedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!contact) return null;
+
+  const sentMessages: ConversationHistoryMessage[] = contact.sentMessages.map(
+    (message) => ({
+      id: message.id,
+      direction: "sent",
+      whatsappMessageId: message.whatsappMessageId,
+      type: message.type,
+      payload: message.payload,
+      status: message.status,
+      timestamp: message.sentAt ?? message.createdAt,
+    }),
+  );
+  const receivedMessages: ConversationHistoryMessage[] =
+    contact.receivedMessages.map((message) => ({
+      id: message.id,
+      direction: "received",
+      sentMessageId: message.sentMessageId,
+      whatsappMessageId: message.whatsappMessageId,
+      type: message.type,
+      payload: message.payload,
+      timestamp: message.receivedAt,
+    }));
+  const messages = [...sentMessages, ...receivedMessages].sort(
+    (first, second) => first.timestamp.getTime() - second.timestamp.getTime(),
+  );
+
+  return {
+    contact: {
+      id: contact.id,
+      phoneNumber: contact.phoneNumber,
+      name: contact.name,
+    },
+    messages,
+  };
+}
+
 function hasValidMetaSignature(req: RequestWithRawBody, appSecret: string): boolean {
   const receivedSignature = req.header("x-hub-signature-256");
 
@@ -162,6 +335,32 @@ function hasValidMetaSignature(req: RequestWithRawBody, appSecret: string): bool
 
   return received.length === expected.length && timingSafeEqual(received, expected);
 }
+
+/** Retorna o historico de conversa do telefone informado. */
+whatsappRouter.get("/messages/history", async (req, res) => {
+  const phoneNumber = req.query.phoneNumber;
+
+  if (typeof phoneNumber !== "string") {
+    res.status(400).json({ error: "O parametro 'phoneNumber' e obrigatorio." });
+    return;
+  }
+
+  try {
+    const history = await getConversationHistory(phoneNumber);
+
+    if (!history) {
+      res.status(404).json({ error: "Contato nao encontrado." });
+      return;
+    }
+
+    res.status(200).json(history);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Erro ao buscar o historico.";
+    const status = error instanceof WhatsAppValidationError ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
+});
 
 /**
  * Envia uma mensagem usando o endpoint /{PHONE_NUMBER_ID}/messages da
@@ -197,7 +396,7 @@ whatsappRouter.post("/messages", async (req, res) => {
     const responseBody =
       typeof message === "string" && message.trim()
         ? await sendMessage(to, message, previewUrl === true)
-        : await sendWhatsAppPayload({ ...officialMessage, to: normalizePhoneNumber(to) });
+        : await sendWhatsAppPayload({ ...officialMessage, to });
 
     res.status(200).json(responseBody);
   } catch (error) {
@@ -241,8 +440,130 @@ whatsappRouter.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
+function getWebhookMessages(body: JsonObject): Array<{
+  message: WebhookMessage;
+  contactName?: string;
+}> {
+  const result: Array<{ message: WebhookMessage; contactName?: string }> = [];
+  const entries = Array.isArray(body.entry) ? body.entry : [];
+
+  for (const entry of entries) {
+    if (!isJsonObject(entry) || !Array.isArray(entry.changes)) continue;
+
+    for (const change of entry.changes) {
+      if (!isJsonObject(change) || !isJsonObject(change.value)) continue;
+
+      const value = change.value;
+      const namesByPhone = new Map<string, string>();
+      const contacts = Array.isArray(value.contacts) ? value.contacts : [];
+
+      for (const contact of contacts) {
+        if (
+          isJsonObject(contact) &&
+          typeof contact.wa_id === "string" &&
+          isJsonObject(contact.profile) &&
+          typeof contact.profile.name === "string"
+        ) {
+          namesByPhone.set(contact.wa_id, contact.profile.name.slice(0, 120));
+        }
+      }
+
+      const messages = Array.isArray(value.messages) ? value.messages : [];
+
+      for (const message of messages) {
+        if (
+          isJsonObject(message) &&
+          typeof message.from === "string" &&
+          typeof message.id === "string" &&
+          typeof message.timestamp === "string" &&
+          typeof message.type === "string"
+        ) {
+          result.push({
+            message: message as WebhookMessage,
+            contactName: namesByPhone.get(message.from),
+          });
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+function parseWhatsAppTimestamp(timestamp: string): Date {
+  const seconds = Number(timestamp);
+  const date = new Date(seconds * 1_000);
+
+  if (!Number.isFinite(seconds) || Number.isNaN(date.getTime())) {
+    throw new WhatsAppValidationError("Timestamp invalido no evento do WhatsApp.");
+  }
+
+  return date;
+}
+
+async function saveReceivedMessage(
+  message: WebhookMessage,
+  contactName?: string,
+): Promise<void> {
+  const duplicate = await prisma.receivedMessage.findUnique({
+    where: { whatsappMessageId: message.id },
+    select: { id: true },
+  });
+
+  if (duplicate) return;
+
+  const phoneNumber = normalizePhoneNumber(message.from);
+  const receivedAt = parseWhatsAppTimestamp(message.timestamp);
+  const contact = await prisma.contact.upsert({
+    where: { phoneNumber },
+    update: contactName ? { name: contactName } : {},
+    create: { phoneNumber, name: contactName },
+  });
+  const context = isJsonObject(message.context) ? message.context : undefined;
+  const contextMessageId =
+    context && typeof context.id === "string" ? context.id : undefined;
+
+  const referencedSentMessage = contextMessageId
+    ? await prisma.sentMessage.findFirst({
+        where: {
+          contactId: contact.id,
+          whatsappMessageId: contextMessageId,
+        },
+      })
+    : null;
+  const sentMessage =
+    referencedSentMessage ??
+    (await prisma.sentMessage.findFirst({
+      where: {
+        contactId: contact.id,
+        status: { in: ["PENDING", "SENT"] },
+        createdAt: { lte: receivedAt },
+      },
+      orderBy: { createdAt: "desc" },
+    }));
+
+  if (!sentMessage) {
+    throw new Error(
+      `Nao existe mensagem enviada para associar a mensagem recebida ${message.id}.`,
+    );
+  }
+
+  await prisma.receivedMessage.upsert({
+    where: { whatsappMessageId: message.id },
+    update: {},
+    create: {
+      contactId: contact.id,
+      sentMessageId: sentMessage.id,
+      whatsappMessageId: message.id,
+      type: message.type,
+      payload: toJsonValue(message),
+      receivedAt,
+    },
+  });
+}
+
 /** Recebe notificacoes de mensagens, status e demais eventos do WhatsApp. */
-whatsappRouter.post("/webhook", (req: RequestWithRawBody, res) => {
+whatsappRouter.post("/webhook", async (req: RequestWithRawBody, res) => {
   const appSecret = process.env.META_APP_SECRET?.trim();
 
   if (appSecret && !hasValidMetaSignature(req, appSecret)) {
@@ -255,8 +576,19 @@ whatsappRouter.post("/webhook", (req: RequestWithRawBody, res) => {
     return;
   }
 
-  // Substitua este log por uma fila ou pelo processamento da sua aplicacao.
-  console.info("Evento recebido do WhatsApp:", JSON.stringify(req.body));
+  try {
+    const messages = getWebhookMessages(req.body);
+
+    for (const { message, contactName } of messages) {
+      await saveReceivedMessage(message, contactName);
+    }
+  } catch (error) {
+    console.error("Falha ao salvar evento recebido do WhatsApp:", error);
+    res.status(500).json({
+      error: "Nao foi possivel salvar as mensagens recebidas.",
+    });
+    return;
+  }
 
   // A Meta espera uma resposta 200 rapida para considerar o evento entregue.
   res.sendStatus(200);

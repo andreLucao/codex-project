@@ -9,11 +9,53 @@ datasource db {
 }
 
 model Contact {
-  id          String   @id @default(uuid()) @db.Uuid
-  phoneNumber String   @unique @map("phone_number") @db.VarChar(15)
-  name        String?  @db.VarChar(120)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id               String            @id @default(uuid()) @db.Uuid
+  phoneNumber      String            @unique @map("phone_number") @db.VarChar(15)
+  name             String?           @db.VarChar(120)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  sentMessages     SentMessage[]
+  receivedMessages ReceivedMessage[]
 
   @@map("contacts")
+}
+
+enum SentMessageStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model SentMessage {
+  id                String            @id @default(uuid()) @db.Uuid
+  contactId         String            @map("contact_id") @db.Uuid
+  whatsappMessageId String?           @unique @map("whatsapp_message_id") @db.VarChar(255)
+  type              String            @db.VarChar(50)
+  payload           Json
+  status            SentMessageStatus @default(PENDING)
+  sentAt            DateTime?         @map("sent_at") @db.Timestamptz(3)
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  contact           Contact           @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  receivedMessages  ReceivedMessage[]
+
+  @@index([contactId, createdAt])
+  @@map("sent_messages")
+}
+
+model ReceivedMessage {
+  id                String      @id @default(uuid()) @db.Uuid
+  contactId         String      @map("contact_id") @db.Uuid
+  sentMessageId     String      @map("sent_message_id") @db.Uuid
+  whatsappMessageId String      @unique @map("whatsapp_message_id") @db.VarChar(255)
+  type              String      @db.VarChar(50)
+  payload           Json
+  receivedAt        DateTime    @map("received_at") @db.Timestamptz(3)
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  contact           Contact     @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  sentMessage       SentMessage @relation(fields: [sentMessageId], references: [id], onDelete: Restrict)
+
+  @@index([contactId, receivedAt])
+  @@index([sentMessageId])
+  @@map("received_messages")
 }
