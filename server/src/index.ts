@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { prisma } from "./lib/prisma.js";
 import { healthRouter } from "./routes/health.js";
+import { usersRouter } from "./routes/users.js";
 import { whatsappRouter, type RequestWithRawBody } from "./routes/whatsapp.js";
 
 const app = express();
@@ -26,6 +27,7 @@ app.get("/api/hello", (_req, res) => {
 });
 
 app.use("/api/health", healthRouter);
+app.use("/api/users", usersRouter);
 app.use("/api/whatsapp", whatsappRouter);
 
 async function startServer(): Promise<void> {

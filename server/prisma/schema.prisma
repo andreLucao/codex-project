@@ -14,10 +14,25 @@ model Contact {
   name             String?           @db.VarChar(120)
   createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user             User?
   sentMessages     SentMessage[]
   receivedMessages ReceivedMessage[]
 
   @@map("contacts")
+}
+
+model User {
+  id               String   @id @default(uuid()) @db.Uuid
+  contactId        String   @unique @map("contact_id") @db.Uuid
+  responsibleName  String   @map("responsible_name") @db.VarChar(120)
+  restaurantName   String   @map("restaurant_name") @db.VarChar(120)
+  address          String   @db.VarChar(300)
+  frequentSupplies String[] @default([]) @map("frequent_supplies")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  contact          Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@map("users")
 }
 
 enum SentMessageStatus {
