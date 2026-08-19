@@ -235,6 +235,14 @@ function outboundPhone(originalPhone: string): string {
 }
 
 function initialTemplateParameters(templateName: string, rfq: Rfq) {
+  if (templateName === "cotacao_fornecedor_entrega_v1") {
+    return [
+      { type: "text", text: rfq.supplierType.replace(/^fornecedor\s+/i, "") },
+      { type: "text", text: `${rfq.quantity} ${rfq.unit} de ${rfq.item}` },
+      { type: "text", text: formatTemplateDate(rfq.deliveryDeadline) },
+      { type: "text", text: rfq.unit },
+    ];
+  }
   if (process.env.WHATSAPP_TEST_RECIPIENT && templateName === "resp_simples") {
     return [
       { type: "text", text: process.env.WHATSAPP_TEST_RECIPIENT_NAME ?? "Leonardo" },
@@ -251,4 +259,9 @@ function initialTemplateParameters(templateName: string, rfq: Rfq) {
     { type: "text", text: rfq.deliveryDeadline },
     { type: "text", text: rfq.deliveryLocation },
   ];
+}
+
+function formatTemplateDate(value: string): string {
+  const parsed = new Date(`${value}T12:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(parsed);
 }
