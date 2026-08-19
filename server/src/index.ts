@@ -3,6 +3,8 @@ import { createDefaultAgentService, hasAgentRuntimeConfig } from "./agent/runtim
 import { createApp, type AppServices } from "./app.js";
 import { connectPrismaIfConfigured, disconnectPrisma } from "./lib/prisma.js";
 import { healthRouter } from "./routes/health.js";
+import { usersRouter } from "./routes/users.js";
+import { whatsappRouter, type RequestWithRawBody } from "./routes/whatsapp.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const services: AppServices = {};
@@ -17,6 +19,8 @@ if (hasAgentRuntimeConfig()) {
 
 const app = createApp(services);
 app.use("/api/health", healthRouter);
+app.use("/api/users", usersRouter);
+app.use("/api/whatsapp", whatsappRouter);
 
 async function startServer(): Promise<void> {
   const prismaConnected = await connectPrismaIfConfigured();

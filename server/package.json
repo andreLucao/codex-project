@@ -6,6 +6,7 @@
     "predev": "prisma generate",
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc",
+    "test": "node --import tsx --test src/**/*.test.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
     "db:up": "docker compose -f ../compose.yaml up -d postgres",
