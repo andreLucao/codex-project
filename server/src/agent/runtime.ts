@@ -22,6 +22,7 @@ export function createDefaultAgentService(): ProcurementAgentService {
     supplierGateway,
     whatsappGateway,
     config: {
+      maxSuppliersPerRfq: readPositiveInt("MAX_SUPPLIERS_PER_RFQ", 10),
       minQuotesToNegotiate: readPositiveInt("MIN_QUOTES_TO_NEGOTIATE", 5),
       minQuotesOnTimeout: readPositiveInt("MIN_QUOTES_ON_TIMEOUT", 2),
       quoteTimeoutSeconds: readPositiveInt("QUOTE_TIMEOUT_SECONDS", 60),

@@ -132,30 +132,28 @@ export class McpWhatsappGateway implements WhatsappGateway {
 
 export class MetaWhatsappGateway implements WhatsappGateway {
   async sendInitialTemplate(input: { idempotencyKey: string; rfq: Rfq; supplier: RfqSupplier }) {
+    const templateName = requiredMetaEnv("META_INITIAL_RFQ_TEMPLATE_NAME");
+    const template = templateName === "hello_world"
+      ? { name: templateName, language: { code: "en_US" } }
+      : {
+          name: templateName,
+          language: { code: process.env.META_TEMPLATE_LANGUAGE ?? "pt_BR" },
+          components: [{
+            type: "body",
+            parameters: initialTemplateParameters(templateName, input.rfq),
+          }],
+        };
     const body = await sendCloudMessage({
-      to: normalizePhone(input.supplier.phone),
+      to: outboundPhone(input.supplier.phone),
       type: "template",
-      template: {
-        name: requiredMetaEnv("META_INITIAL_RFQ_TEMPLATE_NAME"),
-        language: { code: process.env.META_TEMPLATE_LANGUAGE ?? "pt_BR" },
-        components: [{
-          type: "body",
-          parameters: [
-            { type: "text", text: input.rfq.item },
-            { type: "text", text: String(input.rfq.quantity) },
-            { type: "text", text: input.rfq.unit },
-            { type: "text", text: input.rfq.deliveryDeadline },
-            { type: "text", text: input.rfq.deliveryLocation },
-          ],
-        }],
-      },
+      template,
     });
     return { providerMessageId: extractProviderMessageId(body) };
   }
 
   async sendSessionMessage(input: { idempotencyKey: string; rfqSupplierId: string; to: string; text: string }) {
     const body = await sendCloudMessage({
-      to: normalizePhone(input.to),
+      to: outboundPhone(input.to),
       type: "text",
       text: { body: input.text, preview_url: false },
     });
@@ -169,7 +167,7 @@ export class MetaWhatsappGateway implements WhatsappGateway {
     reason: "counteroffer" | "clarification" | "award";
   }) {
     const body = await sendCloudMessage({
-      to: normalizePhone(input.to),
+      to: outboundPhone(input.to),
       type: "template",
       template: {
         name: requiredMetaEnv("META_REENGAGEMENT_TEMPLATE_NAME"),
@@ -230,4 +228,27 @@ function readMcpText(content: Array<{ type: string; text?: string }>): string {
 
 function normalizePhone(value: string): string {
   return value.replace(/\D/g, "");
+}
+
+function outboundPhone(originalPhone: string): string {
+  return normalizePhone(process.env.WHATSAPP_TEST_RECIPIENT?.trim() || originalPhone);
+}
+
+function initialTemplateParameters(templateName: string, rfq: Rfq) {
+  if (process.env.WHATSAPP_TEST_RECIPIENT && templateName === "resp_simples") {
+    return [
+      { type: "text", text: process.env.WHATSAPP_TEST_RECIPIENT_NAME ?? "Leonardo" },
+      { type: "text", text: "Agente de Compras" },
+      { type: "text", text: "Restaurante E2E" },
+      { type: "text", text: `cotacao de ${rfq.item}` },
+      { type: "text", text: rfq.deliveryLocation },
+    ];
+  }
+  return [
+    { type: "text", text: rfq.item },
+    { type: "text", text: String(rfq.quantity) },
+    { type: "text", text: rfq.unit },
+    { type: "text", text: rfq.deliveryDeadline },
+    { type: "text", text: rfq.deliveryLocation },
+  ];
 }

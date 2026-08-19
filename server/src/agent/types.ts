@@ -175,6 +175,7 @@ export interface RfqView {
 }
 
 export interface AgentConfig {
+  maxSuppliersPerRfq: number;
   minQuotesToNegotiate: number;
   minQuotesOnTimeout: number;
   quoteTimeoutSeconds: number;
@@ -183,6 +184,7 @@ export interface AgentConfig {
 }
 
 export const DEFAULT_AGENT_CONFIG: AgentConfig = {
+  maxSuppliersPerRfq: 10,
   minQuotesToNegotiate: 5,
   minQuotesOnTimeout: 2,
   quoteTimeoutSeconds: 60,

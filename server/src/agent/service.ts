@@ -92,7 +92,7 @@ export class ProcurementAgentService {
       const suppliers = await this.dependencies.supplierGateway.search({
         supplierType: draft.supplierType,
         location: profile.location,
-        maxResults: 10,
+        maxResults: this.config.maxSuppliersPerRfq,
       });
       await this.inviteSuppliers(rfq, suppliers);
     } catch (error) {
@@ -299,7 +299,7 @@ export class ProcurementAgentService {
   }
 
   private async inviteSuppliers(rfq: Rfq, candidates: Supplier[]): Promise<void> {
-    const selected = candidates.filter((supplier) => supplier.phone).slice(0, 10);
+    const selected = candidates.filter((supplier) => supplier.phone).slice(0, this.config.maxSuppliersPerRfq);
     await Promise.all(selected.map(async (candidate) => {
       const now = this.now().toISOString();
       const supplier: RfqSupplier = {
