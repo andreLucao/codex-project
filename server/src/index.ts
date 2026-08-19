@@ -1,15 +1,9 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { loadEnvFile } from "node:process";
+import { prisma } from "./lib/prisma.js";
+import { healthRouter } from "./routes/health.js";
 import { whatsappRouter, type RequestWithRawBody } from "./routes/whatsapp.js";
-
-try {
-  loadEnvFile();
-} catch (error) {
-  if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-    throw error;
-  }
-}
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 4000);
@@ -31,8 +25,30 @@ app.get("/api/hello", (_req, res) => {
   });
 });
 
+app.use("/api/health", healthRouter);
 app.use("/api/whatsapp", whatsappRouter);
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+async function startServer(): Promise<void> {
+  await prisma.$connect();
+
+  const server = app.listen(PORT, () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+  });
+
+  const shutdown = (signal: NodeJS.Signals): void => {
+    console.log(`${signal} received. Shutting down...`);
+
+    server.close(async () => {
+      await prisma.$disconnect();
+      process.exit(0);
+    });
+  };
+
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
+}
+
+startServer().catch((error: unknown) => {
+  console.error("Failed to connect to the database:", error);
+  process.exitCode = 1;
 });
