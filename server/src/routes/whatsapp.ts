@@ -1,9 +1,27 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 
 export type RequestWithRawBody = Request & { rawBody?: Buffer };
 
 type JsonObject = Record<string, unknown>;
+
+class WhatsAppValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WhatsAppValidationError";
+  }
+}
+
+export class WhatsAppApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly details: unknown,
+  ) {
+    super(message);
+    this.name = "WhatsAppApiError";
+  }
+}
 
 export const whatsappRouter = Router();
 
@@ -19,6 +37,114 @@ function requiredEnv(name: string): string {
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizePhoneNumber(phoneNumber: string): string {
+  const trimmedPhoneNumber = phoneNumber.trim();
+
+  if (!trimmedPhoneNumber || !/^[+\d\s().-]+$/.test(trimmedPhoneNumber)) {
+    throw new WhatsAppValidationError(
+      "Informe um telefone valido, incluindo o codigo do pais e o DDD.",
+    );
+  }
+
+  const digits = trimmedPhoneNumber.replace(/\D/g, "");
+
+  if (digits.length < 8 || digits.length > 15) {
+    throw new WhatsAppValidationError(
+      "Informe um telefone valido, incluindo o codigo do pais e o DDD.",
+    );
+  }
+
+  return digits;
+}
+
+async function sendWhatsAppPayload(messagePayload: JsonObject): Promise<unknown> {
+  const accessToken = requiredEnv("META_WHATSAPP_ACCESS_TOKEN");
+  const phoneNumberId = requiredEnv("META_WHATSAPP_PHONE_NUMBER_ID");
+  const graphApiVersion = requiredEnv("META_GRAPH_API_VERSION");
+  const graphApiBaseUrl = (
+    process.env.META_GRAPH_API_BASE_URL ?? "https://graph.facebook.com"
+  ).replace(/\/$/, "");
+
+  const metaResponse = await fetch(
+    `${graphApiBaseUrl}/${graphApiVersion}/${encodeURIComponent(phoneNumberId)}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        ...messagePayload,
+      }),
+    },
+  );
+
+  const responseBody: unknown = await metaResponse.json().catch(() => null);
+
+  if (!metaResponse.ok) {
+    throw new WhatsAppApiError(
+      "A Meta recusou o envio da mensagem.",
+      metaResponse.status,
+      responseBody,
+    );
+  }
+
+  return responseBody;
+}
+
+function respondWithSendError(res: Response, error: unknown): void {
+  if (error instanceof WhatsAppApiError) {
+    res.status(error.status).json({ error: error.message, details: error.details });
+    return;
+  }
+
+  const message = error instanceof Error ? error.message : "Erro inesperado ao enviar a mensagem.";
+  const status = error instanceof WhatsAppValidationError ? 400 : 500;
+  res.status(status).json({ error: message });
+}
+
+/**
+ * Inicia uma conversa usando um template previamente aprovado pela Meta.
+ * Troque o nome e o idioma abaixo pelos dados do template da sua conta.
+ */
+export async function sendFirstMessage(to: string): Promise<unknown> {
+  const template = {
+    name: "hello_world",
+    language: { code: "en_US" },
+  };
+
+  return sendWhatsAppPayload({
+    to: normalizePhoneNumber(to),
+    type: "template",
+    template,
+  });
+}
+
+/**
+ * Envia texto livre. Use durante a janela de atendimento iniciada quando o
+ * contato envia uma mensagem para o numero da empresa.
+ */
+export async function sendMessage(
+  to: string,
+  message: string,
+  previewUrl = false,
+): Promise<unknown> {
+  if (!message.trim()) {
+    throw new WhatsAppValidationError("A mensagem nao pode estar vazia.");
+  }
+
+  return sendWhatsAppPayload({
+    to: normalizePhoneNumber(to),
+    type: "text",
+    text: {
+      body: message,
+      preview_url: previewUrl,
+    },
+  });
 }
 
 function hasValidMetaSignature(req: RequestWithRawBody, appSecret: string): boolean {
@@ -58,66 +184,39 @@ whatsappRouter.post("/messages", async (req, res) => {
     return;
   }
 
-  let messagePayload: JsonObject;
-
-  if (typeof message === "string" && message.trim()) {
-    messagePayload = {
-      to: to.trim(),
-      type: "text",
-      text: {
-        body: message,
-        preview_url: previewUrl === true,
-      },
-    };
-  } else {
+  if (!(typeof message === "string" && message.trim())) {
     if (typeof officialMessage.type !== "string") {
       res.status(400).json({
         error: "Informe 'message' para texto simples ou um payload oficial com o campo 'type'.",
       });
       return;
     }
-
-    messagePayload = { ...officialMessage, to: to.trim() };
   }
 
   try {
-    const accessToken = requiredEnv("META_WHATSAPP_ACCESS_TOKEN");
-    const phoneNumberId = requiredEnv("META_WHATSAPP_PHONE_NUMBER_ID");
-    const graphApiVersion = requiredEnv("META_GRAPH_API_VERSION");
-    const graphApiBaseUrl = (
-      process.env.META_GRAPH_API_BASE_URL ?? "https://graph.facebook.com"
-    ).replace(/\/$/, "");
-
-    const metaResponse = await fetch(
-      `${graphApiBaseUrl}/${graphApiVersion}/${encodeURIComponent(phoneNumberId)}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          recipient_type: "individual",
-          ...messagePayload,
-        }),
-      },
-    );
-
-    const responseBody: unknown = await metaResponse.json().catch(() => null);
-
-    if (!metaResponse.ok) {
-      res.status(metaResponse.status).json({
-        error: "A Meta recusou o envio da mensagem.",
-        details: responseBody,
-      });
-      return;
-    }
+    const responseBody =
+      typeof message === "string" && message.trim()
+        ? await sendMessage(to, message, previewUrl === true)
+        : await sendWhatsAppPayload({ ...officialMessage, to: normalizePhoneNumber(to) });
 
     res.status(200).json(responseBody);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Erro inesperado ao enviar a mensagem.";
-    res.status(500).json({ error: message });
+    respondWithSendError(res, error);
+  }
+});
+
+/** Inicia uma conversa enviando o template definido em sendFirstMessage. */
+whatsappRouter.post("/messages/first", async (req, res) => {
+  if (!isJsonObject(req.body) || typeof req.body.to !== "string") {
+    res.status(400).json({ error: "O campo 'to' e obrigatorio." });
+    return;
+  }
+
+  try {
+    const responseBody = await sendFirstMessage(req.body.to);
+    res.status(200).json(responseBody);
+  } catch (error) {
+    respondWithSendError(res, error);
   }
 });
 
