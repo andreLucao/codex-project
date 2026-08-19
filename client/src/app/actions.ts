@@ -1,9 +1,7 @@
 "use server";
 
-import { createClient } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
 import { normalizeBrazilianWhatsapp } from "@/lib/whatsapp";
-import { hasSupabaseConfig } from "@/lib/onboarding-mode";
 
 export type FormState = { status: "idle" | "success" | "error"; message: string };
 
@@ -24,27 +22,38 @@ export async function createRestaurant(_previous: FormState, formData: FormData)
     return { status: "error", message: "Informe um WhatsApp brasileiro com DDD, como +5511999999999." };
   }
 
-  const supabaseConfig = {
-    url: process.env.NEXT_PUBLIC_SUPABASE_URL,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  };
-  if (!hasSupabaseConfig(supabaseConfig)) {
-    console.info("Onboarding completed in local demo mode. No data was persisted.");
-    redirect("/onboarding/concluido");
-  }
+  const apiUrl = (
+    process.env.SERVER_API_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    "http://localhost:4000"
+  ).replace(/\/$/, "");
 
-  const supabase = createClient(supabaseConfig.url, supabaseConfig.serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { error } = await supabase.from("restaurants").insert({
-    name,
-    responsible_name: responsibleName,
-    address,
-    whatsapp,
-    frequent_supplies: frequentSupplies,
-  });
+  try {
+    const response = await fetch(`${apiUrl}/api/users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        restaurantName: name,
+        responsibleName,
+        address,
+        whatsapp,
+        frequentSupplies,
+      }),
+      cache: "no-store",
+    });
 
-  if (error) {
-    console.error("Failed to create restaurant:", error.message);
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      console.error("Failed to create user:", response.status, body?.error);
+      return {
+        status: "error",
+        message: body?.error ?? "Não foi possível concluir o cadastro. Tente novamente.",
+      };
+    }
+  } catch (error) {
+    console.error("Failed to reach the backend:", error);
     return { status: "error", message: "Não foi possível concluir o cadastro. Tente novamente." };
   }
+
   redirect("/onboarding/concluido");
 }

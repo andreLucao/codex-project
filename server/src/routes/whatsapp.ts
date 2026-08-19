@@ -39,6 +39,13 @@ export type ConversationHistory = {
     id: string;
     phoneNumber: string;
     name: string | null;
+    user: {
+      id: string;
+      restaurantName: string;
+      responsibleName: string;
+      address: string;
+      frequentSupplies: string[];
+    } | null;
   };
   messages: ConversationHistoryMessage[];
 };
@@ -257,6 +264,15 @@ export async function getConversationHistory(
       id: true,
       phoneNumber: true,
       name: true,
+      user: {
+        select: {
+          id: true,
+          restaurantName: true,
+          responsibleName: true,
+          address: true,
+          frequentSupplies: true,
+        },
+      },
       sentMessages: {
         orderBy: { createdAt: "asc" },
         select: {
@@ -315,6 +331,7 @@ export async function getConversationHistory(
       id: contact.id,
       phoneNumber: contact.phoneNumber,
       name: contact.name,
+      user: contact.user,
     },
     messages,
   };
