@@ -1,10 +1,10 @@
 import "dotenv/config";
 import { createApp, type AppServices } from "./app.js";
-import { createDefaultAgentService } from "./agent/runtime.js";
+import { createDefaultAgentService, hasAgentRuntimeConfig } from "./agent/runtime.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const services: AppServices = {};
-if (process.env.OPENAI_API_KEY && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY && process.env.WHATSAPP_MCP_URL) {
+if (hasAgentRuntimeConfig()) {
   services.agentService = createDefaultAgentService();
   const interval = setInterval(() => {
     void services.agentService!.tick().catch((error) => console.error("Agent worker tick failed", error));

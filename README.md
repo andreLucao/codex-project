@@ -27,7 +27,9 @@ APIFY_TOKEN=your_apify_token
 OPENAI_API_KEY=your_openai_api_key
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_server_only_service_role_key
-WHATSAPP_MCP_URL=http://localhost:4100/mcp
+META_WHATSAPP_ACCESS_TOKEN=your_meta_access_token
+META_WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+META_GRAPH_API_VERSION=vXX.X
 PORT=4000
 CLIENT_ORIGIN=http://localhost:3000
 ```
@@ -37,9 +39,14 @@ ele. Inicie o servidor com `npm run dev` dentro de `server/`.
 
 Antes de iniciar o agente, aplique `server/supabase/migrations/001_procurement_agent.sql` no projeto Supabase. A tabela de cadastro de restaurantes deve fornecer `id`, `name` e `location`; o nome pode ser configurado com `RESTAURANTS_TABLE`.
 
-## Contrato MCP
+## Integração de WhatsApp e MCP
 
-O agente é cliente de servidores MCP Streamable HTTP. O serviço de WhatsApp deve expor:
+O runtime aceita dois modos de WhatsApp:
+
+- Cloud API direta, configurada pelas variáveis `META_*`; ou
+- servidor MCP Streamable HTTP configurado em `WHATSAPP_MCP_URL`.
+
+Quando MCP estiver habilitado, o serviço de WhatsApp deve expor:
 
 - `send_initial_rfq_template`: primeiro contato com template aprovado;
 - `send_whatsapp_session_message`: texto livre durante a janela aberta;
@@ -48,7 +55,9 @@ O agente é cliente de servidores MCP Streamable HTTP. O serviço de WhatsApp de
 
 Opcionalmente, `SUPPLIER_MCP_URL` pode expor `search_suppliers`. Sem essa variável, o agente reutiliza diretamente o `SupplierSearchService`/Apify já existente.
 
-As mensagens recebidas entram por webhook HTTP, não por MCP. O payload deve conter `rfqId` e `rfqSupplierId`, criados antes do template inicial, para impedir que respostas sejam associadas à RFQ errada.
+As mensagens recebidas entram em `GET/POST /api/whatsapp/webhook`, com validação do token e da assinatura `X-Hub-Signature-256`. O agente correlaciona a resposta pelo ID da mensagem original e usa o telefone como fallback. MCP continua sendo usado para ações solicitadas pelo agente, não como transporte de webhooks.
+
+Para testar um envio direto sem passar pelo agente, use `POST /api/whatsapp/messages` com `{ "to": "5511999999999", "message": "Olá" }` ou um payload oficial da Meta.
 
 ## API do agente
 

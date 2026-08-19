@@ -17,6 +17,7 @@ export interface AgentRepository {
   updateRfq(rfqId: string, changes: Partial<Rfq>): Promise<Rfq>;
   addSupplier(supplier: RfqSupplier): Promise<RfqSupplier>;
   getSupplier(supplierId: string): Promise<RfqSupplier | null>;
+  findSupplierForInbound(phone: string, contextMessageId?: string): Promise<RfqSupplier | null>;
   listSuppliers(rfqId: string): Promise<RfqSupplier[]>;
   updateSupplier(supplierId: string, changes: Partial<RfqSupplier>): Promise<RfqSupplier>;
   recordMessageIfNew(message: StoredMessage): Promise<boolean>;
@@ -76,6 +77,20 @@ export class InMemoryAgentRepository implements AgentRepository {
 
   async getSupplier(supplierId: string): Promise<RfqSupplier | null> {
     return cloneOrNull(this.suppliers.get(supplierId));
+  }
+
+  async findSupplierForInbound(phone: string, contextMessageId?: string): Promise<RfqSupplier | null> {
+    if (contextMessageId) {
+      const message = this.messages.get(contextMessageId);
+      if (message) return this.getSupplier(message.rfqSupplierId);
+      const initial = [...this.suppliers.values()].find((item) => item.providerInitialMessageId === contextMessageId);
+      if (initial) return structuredClone(initial);
+    }
+    const normalized = normalizePhone(phone);
+    const match = [...this.suppliers.values()]
+      .filter((item) => normalizePhone(item.phone) === normalized && !["opted_out", "awarded"].includes(item.status))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+    return cloneOrNull(match);
   }
 
   async listSuppliers(rfqId: string): Promise<RfqSupplier[]> {
@@ -191,6 +206,26 @@ export class SupabaseAgentRepository implements AgentRepository {
     const { data, error } = await this.client.from("rfq_suppliers").select().eq("id", supplierId).maybeSingle();
     if (error) throw error;
     return data ? fromSupplierRow(data) : null;
+  }
+
+  async findSupplierForInbound(phone: string, contextMessageId?: string): Promise<RfqSupplier | null> {
+    if (contextMessageId) {
+      const message = await this.client.from("agent_messages").select("rfq_supplier_id").eq("provider_message_id", contextMessageId).maybeSingle();
+      if (message.error) throw message.error;
+      if (message.data?.rfq_supplier_id) return this.getSupplier(String(message.data.rfq_supplier_id));
+      const initial = await this.client.from("rfq_suppliers").select().eq("provider_initial_message_id", contextMessageId).maybeSingle();
+      if (initial.error) throw initial.error;
+      if (initial.data) return fromSupplierRow(initial.data);
+    }
+    const candidates = await this.client
+      .from("rfq_suppliers")
+      .select()
+      .not("status", "in", "(opted_out,awarded)")
+      .order("updated_at", { ascending: false });
+    if (candidates.error) throw candidates.error;
+    const normalized = normalizePhone(phone);
+    const match = (candidates.data ?? []).map(fromSupplierRow).find((item) => normalizePhone(item.phone) === normalized);
+    return match ?? null;
   }
 
   async listSuppliers(rfqId: string): Promise<RfqSupplier[]> {
@@ -310,3 +345,7 @@ const fromRoundRow = (row: Record<string, unknown>): NegotiationRound => {
   const round = camelRow(row) as unknown as NegotiationRound;
   return { ...round, anchorUnitPrice: Number(round.anchorUnitPrice) };
 };
+
+function normalizePhone(value: string): string {
+  return value.replace(/\D/g, "");
+}

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Supplier } from "../supplier-search.js";
 import { formatMoney, normalizeQuote } from "./normalization.js";
+import { parseMetaInboundMessages } from "./meta-webhook.js";
 import type { SupplierGateway, WhatsappGateway } from "./gateways.js";
 import type { QuoteInterpreter, RfqIntake } from "./openai-agents.js";
 import type { AgentRepository } from "./repository.js";
@@ -217,6 +218,36 @@ export class ProcurementAgentService {
 
     await this.updateRecommendation(rfq.id);
     return requiredView(await this.dependencies.repository.getRfqView(rfq.id));
+  }
+
+  async handleMetaWebhook(payload: Record<string, unknown>): Promise<number> {
+    const messages = parseMetaInboundMessages(payload);
+    let processed = 0;
+    for (const message of messages) {
+      const supplier = await this.dependencies.repository.findSupplierForInbound(message.supplierPhone, message.contextMessageId);
+      if (!supplier) {
+        console.warn("Ignoring unmatched WhatsApp message", { providerMessageId: message.providerMessageId });
+        continue;
+      }
+      const rfq = await this.dependencies.repository.getRfq(supplier.rfqId);
+      if (!rfq) continue;
+      await this.handleInbound({
+        eventId: message.providerMessageId,
+        providerMessageId: message.providerMessageId,
+        restaurantId: rfq.restaurantId,
+        rfqId: rfq.id,
+        rfqSupplierId: supplier.id,
+        supplierPhone: supplier.phone,
+        type: message.type,
+        text: message.text,
+        media: message.mediaId && message.mimeType
+          ? { mediaId: message.mediaId, mimeType: message.mimeType }
+          : undefined,
+        receivedAt: message.receivedAt,
+      });
+      processed += 1;
+    }
+    return processed;
   }
 
   async approve(rfqId: string, quoteId: string, requestId: string): Promise<RfqView> {

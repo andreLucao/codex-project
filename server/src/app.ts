@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from "express";
 import cors from "cors";
+import { createWhatsappRouter, type RequestWithRawBody } from "./routes/whatsapp.js";
 import {
   ApifySupplierSearchClient,
   SupplierSearchError,
@@ -34,7 +35,17 @@ export function createApp(serviceOrOptions?: SupplierSearchService | AppServices
   };
 
   app.use(cors({ origin: process.env.CLIENT_ORIGIN ?? "http://localhost:3000" }));
-  app.use(express.json());
+  app.use(express.json({
+    verify: (req, _res, buffer) => {
+      (req as RequestWithRawBody).rawBody = Buffer.from(buffer);
+    },
+  }));
+
+  app.use("/api/whatsapp", createWhatsappRouter({
+    onWebhook: async (body) => {
+      await getAgentService().handleMetaWebhook(body);
+    },
+  }));
 
   app.get("/api/hello", (_req, res) => {
     res.json({ message: "Hello from the Express server!", timestamp: new Date().toISOString() });

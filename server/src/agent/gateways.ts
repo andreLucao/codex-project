@@ -1,5 +1,6 @@
 import { MCPServerStreamableHttp } from "@openai/agents";
 import { SupplierSearchService, type Supplier } from "../supplier-search.js";
+import { downloadMetaMedia, extractProviderMessageId, requiredMetaEnv, sendCloudMessage } from "../whatsapp/cloud-api.js";
 import type { MediaReference, Rfq, RfqSupplier } from "./types.js";
 
 export interface SupplierGateway {
@@ -129,6 +130,62 @@ export class McpWhatsappGateway implements WhatsappGateway {
   }
 }
 
+export class MetaWhatsappGateway implements WhatsappGateway {
+  async sendInitialTemplate(input: { idempotencyKey: string; rfq: Rfq; supplier: RfqSupplier }) {
+    const body = await sendCloudMessage({
+      to: normalizePhone(input.supplier.phone),
+      type: "template",
+      template: {
+        name: requiredMetaEnv("META_INITIAL_RFQ_TEMPLATE_NAME"),
+        language: { code: process.env.META_TEMPLATE_LANGUAGE ?? "pt_BR" },
+        components: [{
+          type: "body",
+          parameters: [
+            { type: "text", text: input.rfq.item },
+            { type: "text", text: String(input.rfq.quantity) },
+            { type: "text", text: input.rfq.unit },
+            { type: "text", text: input.rfq.deliveryDeadline },
+            { type: "text", text: input.rfq.deliveryLocation },
+          ],
+        }],
+      },
+    });
+    return { providerMessageId: extractProviderMessageId(body) };
+  }
+
+  async sendSessionMessage(input: { idempotencyKey: string; rfqSupplierId: string; to: string; text: string }) {
+    const body = await sendCloudMessage({
+      to: normalizePhone(input.to),
+      type: "text",
+      text: { body: input.text, preview_url: false },
+    });
+    return { providerMessageId: extractProviderMessageId(body) };
+  }
+
+  async requestReengagement(input: {
+    idempotencyKey: string;
+    rfqSupplierId: string;
+    to: string;
+    reason: "counteroffer" | "clarification" | "award";
+  }) {
+    const body = await sendCloudMessage({
+      to: normalizePhone(input.to),
+      type: "template",
+      template: {
+        name: requiredMetaEnv("META_REENGAGEMENT_TEMPLATE_NAME"),
+        language: { code: process.env.META_TEMPLATE_LANGUAGE ?? "pt_BR" },
+        components: [{ type: "body", parameters: [{ type: "text", text: input.reason }] }],
+      },
+    });
+    return { providerMessageId: extractProviderMessageId(body) };
+  }
+
+  async getMedia(mediaId: string): Promise<MediaReference> {
+    const media = await downloadMetaMedia(mediaId);
+    return { mediaId, ...media };
+  }
+}
+
 export class RecordingWhatsappGateway implements WhatsappGateway {
   readonly initialTemplates: Array<{ idempotencyKey: string; rfq: Rfq; supplier: RfqSupplier }> = [];
   readonly sessionMessages: Array<{ idempotencyKey: string; rfqSupplierId: string; to: string; text: string }> = [];
@@ -169,4 +226,8 @@ export class RecordingWhatsappGateway implements WhatsappGateway {
 
 function readMcpText(content: Array<{ type: string; text?: string }>): string {
   return content.filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n");
+}
+
+function normalizePhone(value: string): string {
+  return value.replace(/\D/g, "");
 }
