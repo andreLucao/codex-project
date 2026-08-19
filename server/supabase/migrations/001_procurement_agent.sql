@@ -1,3 +1,11 @@
+create table if not exists public.restaurants (
+  id text primary key,
+  name text not null,
+  location text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.rfqs (
   id uuid primary key,
   request_id text not null unique,
@@ -105,6 +113,7 @@ create index if not exists quotes_rfq_supplier_idx on public.quotes (rfq_id, rfq
 create index if not exists agent_messages_thread_idx on public.agent_messages (rfq_supplier_id, created_at);
 
 alter table public.rfqs enable row level security;
+alter table public.restaurants enable row level security;
 alter table public.rfq_suppliers enable row level security;
 alter table public.agent_messages enable row level security;
 alter table public.quotes enable row level security;

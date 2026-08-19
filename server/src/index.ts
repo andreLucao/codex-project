@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createDefaultAgentService, hasAgentRuntimeConfig } from "./agent/runtime.js";
 import { createApp, type AppServices } from "./app.js";
-import { prisma } from "./lib/prisma.js";
+import { connectPrismaIfConfigured, disconnectPrisma } from "./lib/prisma.js";
 import { healthRouter } from "./routes/health.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -19,7 +19,8 @@ const app = createApp(services);
 app.use("/api/health", healthRouter);
 
 async function startServer(): Promise<void> {
-  await prisma.$connect();
+  const prismaConnected = await connectPrismaIfConfigured();
+  if (!prismaConnected) console.log("DATABASE_URL not configured; using Supabase as the agent database.");
 
   const server = app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`);
@@ -28,7 +29,7 @@ async function startServer(): Promise<void> {
   const shutdown = (signal: NodeJS.Signals): void => {
     console.log(`${signal} received. Shutting down...`);
     server.close(async () => {
-      await prisma.$disconnect();
+      await disconnectPrisma();
       process.exit(0);
     });
   };
@@ -38,6 +39,6 @@ async function startServer(): Promise<void> {
 }
 
 startServer().catch((error: unknown) => {
-  console.error("Failed to connect to the database:", error);
+  console.error("Failed to start the server:", error);
   process.exitCode = 1;
 });
